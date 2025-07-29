@@ -1,0 +1,607 @@
+/*
+ Library declaration.
+  Notes:
+  identifier includes the version of the library (git tag / branch)
+  remote includes the repository git url
+  credentialsId needs to be of the type SSH key in Jenkins
+  _ at the end of the declaration loads the whole library
+
+  This section always runs in the master jenkins.
+*/
+try {
+	library(
+		identifier: 'jsl-jenkins-shared-library-local@stable',
+		retriever: modernSCM(
+		[
+			$class: 'GitSCMSource',
+			remote: "/app/jenkins/git/jsl-jenkins-shared-library.git",
+			extensions: [
+            	[$class: 'WipeWorkspace']
+			]
+    	]
+		)
+	) _
+} catch (Exception Ex) {
+	library(
+		identifier: 'jsl-jenkins-shared-library@stable',
+		retriever: modernSCM(
+			[
+				$class: 'GitSCMSource',
+				remote: "https://github.com/CenturyLink/jsl-jenkins-shared-library.git",
+				credentialsId: 'GITHUB_APP_CREDENTIALS',
+				extensions: [
+            		[$class: 'WipeWorkspace']
+        		]
+    		]
+		)
+	) _
+
+}
+
+pipeline {
+
+    environment {
+    GITHUB_TOKEN_CREDENTIALS = 'GITHUB_APP_CREDENTIALS'
+    GITHUB_SSH_CREDENTIALS = 'SCMAUTO_SSH_DEVOPS_PIPELINE'
+    DOCKER_CREDENTIALS = 'nexus-secrets-file'
+    SONARQUBE_CREDENTIALS = 'sonarcicdent'
+    JIRA_CREDENTIALS = 'jira-credentials'
+    //QUALITY_GATE_CREDENTIALS = 'qualitygate-secret'
+    QUALITY_GATE_CREDENTIALS = 'qg-creds'
+
+    EMAIL_RECIPIENTS = 'kirankumar.reddy@lumen.com'
+    // BUILD_VERSION = '1.0'
+    // BUILD_VERSION = '1.00.01'
+    PROJECT_ID = 'prj-adapt-app-dev-001'
+    CLUSTER_NAME = 'gke-adapt-app-dev-us-west1-001'
+    LOCATION = 'us-west1'
+    K8S_NAMESPACE='default';
+    APP_OWNER_CUID="AC89596";
+    STATUS = "SUCCESSFUL"
+    GCP_CONF_PROD = "DeploConfigProd"
+    GCP_CONF_DEV = "DeploConfigCopilot"
+    ENV_NAME = 'Dev'
+    PROJECT_NAME = 'qf-chatbot'
+
+    //GCP_REG_IMAGE = "gcr.io/${PROJECT_ID}/${APP_NAME}/${FOLDER_NAME}:${BUILD_VERSION}"
+    AUTHORIZED_USERS = 'authorized_users'
+    DEPLOY_AUTH_TOKEN = 'deploy_auth_token'
+
+    MASTER_BRANCH_REGEX = 'copilot.*'
+    PROD_BRANCH_REGEX = 'prod-deploy.*'
+
+    BUILD_VERSION = "copilot_bot-${BUILD_NUMBER}"
+    GCP_REG_IMAGE = 'us-west1-docker.pkg.dev/prj-itops-jenkins-003/adapt/qf-chatbot'
+    GCP_BRANCH = 'copilot'
+    PROD_BRANCH = 'prod-deploy'
+    BRANCH_NAME = GIT_BRANCH.split('/')[-1].trim().toLowerCase()
+    COMMIT_ID = GIT_COMMIT.substring(0,7).trim().toLowerCase()
+    SONAR_PROPERTIES_FILE = "cicd/conf/sonarqube/sonar-project.properties"
+    QGATE_VALIDATION_ENDORSEMENT = "enabled"
+    PROJECT_MAL = "none"
+    IMAGE_NAME = "${env.PROJECT_NAME}"
+    AR_REGISTRY_HOST= 'us-west1-docker.pkg.dev'
+    AR_DOCKER_REPO='prj-itops-jenkins-003/adapt'
+    AR_REGISTRY_CREDENTIALS = 'gcr_push_key_adapt'
+    }
+    parameters {
+      //      https://www.jenkins.io/doc/book/pipeline/syntax/#parameters
+      text(name: 'GCR', defaultValue: '', description: 'Enter the GCR description. Only used in deployment to production stage.')
+      text(name: 'VERSION', defaultValue: '', description: 'Version to deploy. Only used in deployment to production stage.')
+    }
+
+
+    /*
+    https://www.jenkins.io/doc/book/pipeline/syntax/#agent
+    Add agent sections in stages/stage if needed.
+    */
+    agent {
+      label 'Docker-enabled'
+
+    }
+
+    options {
+      /*
+      https://www.jenkins.io/doc/book/pipeline/syntax/#options
+      */
+      //debug()
+      timestamps ()
+      timeout(time: 1, unit: 'HOURS')
+      buildDiscarder(logRotator(numToKeepStr:'10', daysToKeepStr: '30'))
+      preserveStashes(buildCount: 10)
+      disableConcurrentBuilds()
+      // skipDefaultCheckout(true)
+      // skipStagesAfterUnstable()
+
+    }
+
+    /*
+    https://www.jenkins.io/doc/book/pipeline/syntax/#triggers
+    */
+    triggers {
+      issueCommentTrigger('.*test this please.*')
+    }
+
+    stages {
+	/* GCP */
+	stage('Set work variables') {
+            steps {
+                script {
+                    //env.BUILD_VERSION = sh(script: "cat VERSION", returnStdout: true).trim()
+
+                    if (env.GIT_BRANCH ==~ env.PROD_BRANCH_REGEX) {
+                        env.GCP_CONF_FILE = env.GCP_CONF_PROD
+                    } else if (env.GIT_BRANCH ==~ env.MASTER_BRANCH_REGEX) {
+                        env.GCP_CONF_FILE = env.GCP_CONF_DEV
+                    }
+                }
+            }
+        }
+	/* GCP Ends */
+      stage('Authorize - Prod only') {
+        when {
+          expression { BRANCH_NAME ==~ /(production)/ }
+        }
+        steps {
+          script {
+            jslDeployK8SControlKnob()
+          }
+        }
+      }
+
+//       stage('Static Code Analysis') {
+//         parallel {
+//           stage('Linting') {
+//             agent {
+//               docker {
+//                 // Use the image accoridng to your version
+//                 // jdk1_11_agent:latest
+//                 // jdk1_8_agent:latest
+//                 // jdk1_7_agent:latest
+//                 image 'nexusprod.corp.intranet:4567/jsl-docker-standard-images/jdk1_8_agent:latest'
+//                 label 'Docker-enabled'
+//               }
+//             }
+//             steps {
+//               script {
+//                 // /* Contract validation gate */
+//                 jslMavenWrapper('-ntp  -f ./pom.xml checkstyle:checkstyle ')
+//                 archiveArtifacts artifacts: 'target/checkstyle-result.xml', fingerprint: true
+//                 /* Contract validation gate */
+//                 stash name: "LINTING", includes: "target/checkstyle-result.xml"
+//               }
+//             }
+//           }
+//           stage('DevSecOps'){
+//             steps {
+//               script {
+//                 /* Contract validation gate */
+//                 jslGitHubSecurityAlert()
+//               }
+//             }
+//           }
+//         }
+//       }
+
+      stage('Setting variables') {
+            steps {
+                script {
+                    println "IMAGE TAG before " + env.IMAGE_TAG
+                    println "Change id " + env.CHANGE_ID
+                    if (env.CHANGE_ID.equals(null)) {
+                        println "This is not a PR"
+                        env.IMAGE_TAG = "${BUILD_VERSION}"
+                    } else {
+                        "This is a PR"
+                        env.IMAGE_TAG = "${env.PULL_REQUEST}"
+                    }
+                    println "IMAGE TAG is " + env.IMAGE_TAG
+                }
+            }
+      }
+
+
+//       stage('Build') {
+//         agent {
+//           docker {
+//             // Use the image accoridng to your version
+//             // jdk1_11_agent:latest
+//             // jdk1_8_agent:latest
+//             // jdk1_7_agent:latest
+//             image 'nexusprod.corp.intranet:4567/jsl-docker-standard-images/jdk1_8_agent:latest'
+//             label 'Docker-enabled'
+//           }
+//         }
+//         steps {
+//           script {
+//             jslMavenWrapper("-f ./pom.xml clean install -DskipTests")
+//             stash name: "TARGET", includes: "**/target/**"
+//           }
+//         }
+//       }
+//       stage('Test') {
+//          stages {
+      //     stage('Unit Tests') {
+      //       agent {
+      //         docker {
+      //           // Use the image accoridng to your version
+      //           // jdk1_11_agent:latest
+      //           // jdk1_8_agent:latest
+      //           // jdk1_7_agent:latest
+      //           image 'nexusprod.corp.intranet:4567/jsl-docker-standard-images/jdk1_8_agent:latest'
+      //           label 'Docker-enabled'
+      //         }
+      //       }
+      //       steps {
+      //         script {
+      //           /* Contract validation gate */
+      //           unstash name: "TARGET"
+      //           jslMavenWrapper('-f ./pom.xml test jacoco:prepare-agent jacoco:report-aggregate')
+      //           jslPublishTestResults('report-module/target/surefire-reports/*.xml')
+      //           stash name: "TESTS", includes: "report-module/target/surefire-reports/*.xml"
+      //           stash name: "COVERAGE_REPORT", includes: "report-module/target/site/jacoco-aggregate/jacoco.xml"
+      //         }
+      //       }
+      //     }
+
+//           stage('Coverage'){
+//             steps {
+//               script {
+//                  unstash name: "TARGET"
+//                 // unstash name: "TESTS"
+//                 // unstash name: "COVERAGE_REPORT"
+//                 /* Contract validation gate */
+//                 // /* Sonar get executed only in Master Branch */
+//                 jslQualityGateCodeCoverage('./cicd/conf/sonarqube/sonar-project.properties')
+//                 // archiveArtifacts artifacts: 'report-module/target/site/jacoco-aggregate/jacoco.xml'
+//               }
+//             }
+//           }
+//
+//           stage('Sonarqube'){
+//             agent {
+//                 docker {
+//                 image 'nexusprod.corp.intranet:4567/jsl-docker-standard-images/sonarqube_agent:latest'
+//                 label 'Docker-enabled'
+//               }
+//             }
+//             steps {
+//               script {
+//                 unstash name: "TARGET"
+//                 // unstash name: "TESTS"
+//                 // unstash name: "COVERAGE_REPORT"
+//                 /* Contract validation gate */
+//                 jslSonarQubeStaticAnalysis('./cicd/conf/sonarqube/sonar-project.properties')
+//               }
+//             }
+//           }
+//
+//           stage('Quality Gate'){
+//             agent {
+//               docker {
+//                 image 'nexusprod.corp.intranet:4567/jsl-docker-standard-images/sonarqube_agent:latest'
+//                 label 'Docker-enabled'
+//               }
+//             }
+//             steps {
+//               script {
+//                 /* Contract validation gate */
+//                 jslQualityGate()
+//               }
+//             }
+//           }
+//
+//           stage('Quality Gate1-Validation'){
+//             agent {
+//               docker {
+//                 image 'nexusprod.corp.intranet:4567/jsl-docker-standard-images/jira_agent:latest'
+//                 label 'Docker-enabled'
+//               }
+//             }
+//             steps {
+//               script {
+//                 // unstash name: "TESTS"
+//                 echo "QualityGate1-Unit"
+//                 // jslCheckQualityGates("'report-module/target/surefire-reports/*.xml'", 'QualityGate1-Unit')
+//               }
+//             }
+//           }
+//         }
+//       }
+
+      stage('Create Images') {
+        steps {
+          script {
+//             unstash name: "TARGET"
+            def dockerfile_path = './Dockerfile'
+	    // def appDPath='appdynamics/AppServerAgent-${APPDYNAMICS_VERSION}.zip'
+	    // def appDArtifact='AppServerAgent-${APPDYNAMICS_VERSION}.zip'
+            // jslDownloadFileFromNexus(appDArtifact, appDPath)
+            // env.ARGUMENTS = "--build-arg AD_VERSION=${env.APPDYNAMICS_VERSION}"
+            // jslDirectBuildAndPushToNexus(dockerfile_path, env.IMAGE_TAG, env.IMAGE_NAME, env.DOCKER_REPO, env.DOCKER_CREDENTIALS, env.ARGUMENTS)
+            jslDirectBuildAndPushToNexus(dockerfile_path, env.IMAGE_TAG, env.IMAGE_NAME, env.DOCKER_REPO, env.DOCKER_CREDENTIALS)
+          	jslCleanPath(dockerfile_path)
+          }
+        }
+      }
+
+      stage('Copy Image to Artifact Registry'){
+        agent {
+          label 'Docker-enabled'
+        }
+        steps {
+          script {
+            jslNexusToGcpCopy(env.IMAGE_NAME, env.IMAGE_TAG)
+          }
+        }
+      }
+
+    /* GCP Start */
+	  stage("Deploy to GCP GKE (nonProd)") {
+	        agent {
+                  label 'gcp-dev-deployment-west'
+                }
+            when {
+                anyOf {
+				    expression { BRANCH_NAME == GCP_BRANCH }
+                    //branch pattern: env.MASTER_BRANCH_REGEX, comparator: "REGEXP"
+                }
+            }
+            environment {
+                GCP_HOME = tool name: 'google-cloud-sdk-350', type: 'gcloud'
+            }
+            steps {
+                script {
+                    configFileProvider([configFile(fileId: env.GCP_CONF_FILE, variable: 'AUX_GCP_CONF')]) {
+                        envFromfile = readDeploPropertiesFile(env.AUX_GCP_CONF);
+                        withEnv(envFromfile) {
+                            withCredentials([file(credentialsId: env.GCP_CRED_NAME, variable: 'GCRCREDFILE')]) {
+                                sh("bash -vx jen-kube-deploy.sh")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    /* GCP Ends */
+
+//       stage('E2E Testing') {
+//         when {
+//           beforeAgent true
+//           anyOf {
+//             expression { return currentBuild.currentResult.toLowerCase() == "success" && env.BRANCH_NAME !=~ /(PR-|pr-).*/ && env.APP_ACTIVE_PROFILE==~ /test1/}
+//           }
+//         }
+//         stages{
+//             stage('Sanity Test') {
+//               agent {
+//                 dockerfile {
+//                   filename 'Dockerfile'
+//                   dir 'cicd/docker/soatest'
+//                   label 'Docker-enabled'
+//                 }
+//               }
+//               steps {
+//                 script {
+//                   env.TestEnvironment = env.APP_ACTIVE_PROFILE.toUpperCase()
+//                   sh("echo testing on ${env.TestEnvironment}")
+//                   def my_test_repo = "ACTASASERV-improv"
+//                   // def my_test_owner = "CenturyLink"
+//                   // def my_test_branch = 'master'
+//                   // jslGitHubCloneRepo(my_test_repo,my_test_owner,my_test_branch)
+//                   checkout([$class: 'GitSCM', branches: [[name: '*/master']], extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: 'ACTASASERV-improv']], gitTool: 'git 2.9', userRemoteConfigs: [[credentialsId: 'GITHUB_APP_CREDENTIALS', url: 'https://github.com/CenturyLink/ACTASASERV-improv.git']]])
+//                   sh script: """
+//                   cd ${WORKSPACE}/ACTASASERV-improv
+//                   \"/soatest/parasoft/soatest_virtualize/9.10/soatestcli\" -data \"${WORKSPACE}/ACTASASERV-improv\" -import \"${WORKSPACE}/ACTASASERV-improv\"
+//                   \"/soatest/parasoft/soatest_virtualize/9.10/soatestcli\" -data \"${WORKSPACE}/ACTASASERV-improv\" -resource \"IMPROV_TST_SANITYP4/IMPROV_SANITY_E2E.tst\" -environment \"${env.TestEnvironment}\" -config \"soatest.user://Example Configuration\" -report \"${WORKSPACE}/ACTASASERV-improv/SANITY_REPORT.xml\" -localsettings \"${WORKSPACE}/ACTASASERV-improv/lib/Localsettings.properties\" -appconsole \"stdout\"
+//
+//                   mkdir -p ${WORKSPACE}/qareports
+//                   cp ${WORKSPACE}/ACTASASERV-improv/SANITY_REPORT.html ${WORKSPACE}/qareports/
+//                   cp ${WORKSPACE}/ACTASASERV-improv/SANITY_REPORT.xml ${WORKSPACE}/qareports/
+//                   """
+//                   stash name: "SANITYRESULTS", includes: 'qareports/**'
+//
+//                   step([$class: 'XUnitPublisher',
+//                   tools: [[$class: 'ParasoftSOAtest9xType', deleteOutputFiles: false, failIfNotNew: false, pattern: '**\\qareports\\SANITY_REPORT.xml', skipNoTestFiles: false, stopProcessingIfError: true]]])
+//
+//                   stash name: "SANITYXML", includes: "generatedJUnitFiles/**/**/*.xml"
+//
+//                   jslEmailNotification('Bindya.S.Bangera@lumen.com,ramesh.belkoti@lumen.com', 'ramesh.belkoti@lumen.com',"Sanity_Report-${PROJECT_NAME}-Env ${env.TestEnvironment}- build #${BUILD_NUMBER}","qareports/SANITY_REPORT.html")
+//                   cleanWs()
+//                 }
+//               }
+//             }
+//             stage ("Publish Reports") {
+//               steps {
+//                 script{
+//                   unstash name: "SANITYRESULTS"
+//                   unstash name: "SANITYXML"
+//                   jslPublishHTMLTestResults('SANITY_REPORT.html',"qareports", 'Sanity HTML Report')
+//                   if (fileExists("generatedJUnitFiles")) {
+//                   jslPublishTestResults("generatedJUnitFiles/**/**/*.xml")
+//                   }
+//                 }
+//               }
+//             }
+//             stage('Quality Gate 2 Validation'){
+//               agent{
+//                 dockerfile {
+//                   filename 'Dockerfile'
+//                   dir 'cicd/docker/qualitygate'
+//                   label 'Docker-enabled'
+//                 }
+//               }
+//               steps{
+//                 script{
+//                   try{
+//                     unstash name: "SANITYXML"
+//                   }catch (Exception e) {
+//                      echo "Error while unstashing ${e.getMessage()}"
+//                     }
+//                   if (fileExists("generatedJUnitFiles")) {
+//                     jslCheckQualityGates("'generatedJUnitFiles/**/**/*.xml'", 'QualityGate2-Sanity')
+//                     dir("generatedJUnitFiles"){
+//                       deleteDir()
+//                     }
+//                   }
+//                 }
+//               }
+//             }
+//         }
+//       }
+
+//       stage('E2E Testing') {
+//               when {
+//                 expression { !(BRANCH_NAME ==~ /(production)/) }
+//               }
+//               agent {
+//                   dockerfile {
+//                       filename 'Dockerfile'
+//                       dir 'cicd/docker/mvn'
+//                       label 'Docker-enabled'
+//                   }
+//               }
+//               steps {
+//                 script {
+//                   // unstash name: "INGRESS"
+//                   println ('Placeholder for E2E testing')
+//
+//                 }
+//               }
+//             }
+            stage('Adoption Stats') {
+              agent {
+                  docker {
+                      image 'nexusprod.corp.intranet:4567/jsl-docker-standard-images/jira_agent:latest'
+                      label 'Docker-enabled'
+                  }
+               }
+               steps {
+                script{
+                  if ( BRANCH_NAME == PROD_BRANCH ) {
+                    sh ('touch hook_test.xml')
+                  } else {
+//                       unstash name: "TESTS"
+                      // Set to False in case authorized to skip Quality Gate 6 in case you don't have all requirements
+                  }
+
+                  /* Contract validation gate */
+//                   jslAdoptionMain('target/surefire-reports/*.xml')
+                }
+              }
+             }
+            }
+
+  // post {
+  //       always {
+  //           script {
+  //               def emailSubject = "${env.JOB_NAME} - Build #${env.BUILD_NUMBER} ${currentBuild.currentResult}"
+  //               def emailBody = """
+  //               Build Details:
+  //               Build #: ${env.BUILD_NUMBER}
+  //               Repository: ${env.GIT_URL}
+  //               Environment: ${env.ENV_NAME}
+  //               Status: ${currentBuild.currentResult}
+  //               """
+
+  //               emailext(
+  //                   to: 'QF-Apigee-GCP-Jenkins@lumen.com',
+  //                   subject: emailSubject,
+  //                   body: emailBody
+  //               )
+  //           }
+  //       }
+
+  //       failure {
+  //           script {
+  //               def emailSubject = "${env.JOB_NAME} - Build #${env.BUILD_NUMBER} Failed"
+  //               def emailBody = """
+  //               Build Details:
+  //               Build #: ${env.BUILD_NUMBER}
+  //               Repository: ${env.GIT_URL}
+  //               Environment: ${env.ENV_NAME}
+  //               Status: ${currentBuild.currentResult}
+  //               Failed Stage: ${env.STAGE_NAME}
+
+  //               Failed Log:
+  //               ${readFile("${env.WORKSPACE}/logs/${env.STAGE_NAME}.log")}
+  //               """
+
+  //               emailext(
+  //                   to: 'QF-Apigee-GCP-Jenkins@lumen.com',
+  //                   subject: emailSubject,
+  //                   body: emailBody
+  //               )
+  //           }
+  //       }
+
+  //       success {
+  //           script {
+  //               def emailSubject = "${env.JOB_NAME} - Build #${env.BUILD_NUMBER} Successful"
+  //               def emailBody = """
+  //               Build Details:
+  //               Build #: ${env.BUILD_NUMBER}
+  //               Repository: ${env.GIT_URL}
+  //               Environment: ${env.ENV_NAME}
+  //               Status: ${currentBuild.currentResult}
+  //               """
+
+  //               emailext(
+  //                   to: 'kirankumar.reddy@lumen.com',
+  //                   subject: emailSubject,
+  //                   body: emailBody
+  //               )
+  //           }
+  //       }
+  //   }
+}
+
+
+/* GCP Starts Start */
+
+
+
+def deployAll() {
+  env.CLOUD_ENVIRONMENT = jslGetLifecycleEnvironment('master',env.PROD_BRANCH)
+  def endpoint
+  if (env.CHANGE_ID == null) {
+    jslGitHubDeploymentCreate(env.GIT_BRANCH, env.CLOUD_ENVIRONMENT)
+  }
+  try {
+    if (env.CHANGE_ID == null) {
+      jslGitHubDeploymentSetStatus(env.GIT_BRANCH,'in_progress', null, env.GITHUB_TOKEN_CREDENTIALS, env.CLOUD_ENVIRONMENT)
+    }
+    def my_manifest = './sample_manifest.yml'
+    jslGenerateManifestFromTemplate('ingress.tmpl service-dev.tmpl deployment-dev.tmpl', my_manifest, 'java','master',env.PROD_BRANCH)
+    jslDeployK8sManifest(my_manifest, 'java','master',env.PROD_BRANCH)
+    stash name: "INGRESS", includes: "ingress_info.txt"
+    jslCleanPath(my_manifest)
+    endpoint = sh(script: "cat ingress_info.txt", returnStdout: true).trim()
+    jslGitHubMessage("The endpoint is available at: ${endpoint}")
+    if (env.CHANGE_ID == null) {
+        jslGitHubDeploymentSetStatus(env.GIT_BRANCH,'success', endpoint, env.GITHUB_TOKEN_CREDENTIALS, env.CLOUD_ENVIRONMENT)
+        if (env.GIT_BRANCH == env.PROD_BRANCH) {
+          env.AUTH_RELEASE = true
+        }
+    }
+  } catch (Exception e) {
+    if (env.CHANGE_ID == null) {
+      jslGitHubDeploymentSetStatus(env.GIT_BRANCH,'failure', null, env.GITHUB_TOKEN_CREDENTIALS, env.CLOUD_ENVIRONMENT)
+    }
+    error ('Deployment failed with error: ' + e)
+  }
+}
+ArrayList readDeploPropertiesFile(fileName) {
+    result = []
+
+    // readFile(fileName).split('\\n').each { line ->
+
+    readFile(fileName).split('\\n').each { line ->
+        X:
+        {
+            resStr = line.replaceAll('"', '').replaceAll("'", '')
+            result.add(resStr)
+        }
+    }
+    return result
+}
