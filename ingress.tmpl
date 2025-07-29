@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${APP_NAME}
+  namespace: ${K8S_NAMESPACE}
+  annotations:
+   kubernetes.io/ingress.class: "nginx"
+   kubernetes.io/ingress.allow-http: "true"
+   nginx.ingress.kubernetes.io/rewrite-target: /
+   nginx.ingress.kubernetes.io/ssl-passthrough: "false"
+   nginx.ingress.kubernetes.io/ssl-redirect: "false"
+   nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+   nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  tls:
+  - hosts:
+    - adapt-stub-service-dev2.adapt.gcp.dev.intranet
+    secretName: chatbot-secret
+  rules:
+  - host: adapt-stub-service-dev2.adapt.gcp.dev.intranet
+    http:
+      paths:
+      - path: /
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: ${APP_NAME}
+            port:
+              number: 8085

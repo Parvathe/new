@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${APP_NAME}
+  namespace: ${K8S_NAMESPACE}
+spec:
+  selector:
+    matchLabels:
+      app: ${APP_NAME}
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: ${APP_NAME}
+    spec:
+      containers:
+      - name: ${APP_NAME}
+        image: ${GCP_REG_IMAGE}:${BUILD_VERSION}
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8085
+          protocol: TCP
+      imagePullSecrets:
+      - name: artifact-registry
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: sa-adapt-app-ai-services
+      serviceAccountName: sa-adapt-app-ai-services
